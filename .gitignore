@@ -1,0 +1,6 @@
+*.xls
+*.xlsx
+*.exe
+__debug_bin
+log*.txt
+.vscode
