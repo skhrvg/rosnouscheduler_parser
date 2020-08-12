@@ -274,20 +274,54 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 					currentClass := Class{
 						Discipline: cols[1][weekdaysStart[weekday] + discipline*3],
 						Time: cols[0][weekdaysStart[weekday] + discipline*3],
-						ClassType: cols[col][weekdaysStart[weekday] + discipline*3],
+						ClassType: strings.Replace(cols[col][weekdaysStart[weekday] + discipline*3], "\n", " ", -1),
 						Comment: cols[col][weekdaysStart[weekday] + discipline*3 + 1],
 						Location: cols[1][weekdaysStart[weekday] + discipline*3 + 2],
 						Professor: cols[1][weekdaysStart[weekday] + discipline*3 + 1],
 						Date: firstDate.AddDate(0, 0, ((col-firstCol)*7)+weekday),
+					}
+					for strings.Contains(currentClass.ClassType, "  ") {
+						currentClass.ClassType = strings.Replace(currentClass.ClassType, "  ", " ", -1)
+					}
+					switch currentClass.ClassType {
+					case "Л":
+						currentClass.ClassType = "Лекция"
+					case "С":
+						currentClass.ClassType = "Семинар"
+					case "ПЗ":
+						currentClass.ClassType = "Практическое занятие"
+					case "ЗАЧ":
+						currentClass.ClassType = "ЗАЧЕТ"
+					case "Л/ПЗ":
+						currentClass.ClassType = "Лекция / Практическое занятие"
+					case "Л/С":
+						currentClass.ClassType = "Лекция / Семинар"
+					case "Лаб":
+						currentClass.ClassType = "ЛАБОРАТОРНАЯ РАБОТА"
+					case "ЛАБ":
+						currentClass.ClassType = "ЛАБОРАТОРНАЯ РАБОТА"
+					case "ДИФ.ЗАЧ":
+						currentClass.ClassType = "ДИФ. ЗАЧЕТ"
+					case "ЗАЩ":
+						currentClass.ClassType = "ЗАЩИТА"
+					case "С/Л":
+						currentClass.ClassType = "Семинар / Лекция"
+					case "ПЗ/Л":
+						currentClass.ClassType = "Практическое занятие / Лекция"
+					case "Л/ЗАЧ":
+						currentClass.ClassType = "Лекция / ЗАЧЕТ"
+					case "К":
+						currentClass.ClassType = "КОНСУЛЬТАЦИЯ"
+					case "ЭКЗ":
+						currentClass.ClassType = "ЭКЗАМЕН"
+					default:
+						l.warn("[%s] Неизвестный тип занятия: %s [%d:%d]", fileName, currentClass.ClassType, col, weekdaysStart[weekday] + discipline*3)
 					}
 					classes = append(classes, currentClass)
 				}
 			}
 		}
 	}
-	// for _, class := range classes {
-	// 	l.debugLogger.Println(class.Date.Year(), "-", class.Date.Month(), "-", class.Date.Day(), class.Discipline, " ", class.ClassType, " ")
-	// }
 	return
 }
 
@@ -403,15 +437,4 @@ func main() {
 	// тут будет отправка данных в БД
 	tmp, _ := json.Marshal(groups)
 	l.debug("%s", tmp)
-
-
-	// filePath := "./cache/downloads"
-	// fileName := "test.xlsx"
-	// excelFile, err := excelize.OpenFile(filePath + "/" + fileName)
-	// if err != nil {
-	// 	l.warn("[%s] Не удалось открыть Excel файл: %s\n", fileName, err)
-	// }
-	// l.debug("FRI:%d LRI:%d LCI:%d", getFirstRowIndex(excelFile), getLastRowIndex(excelFile), getLastColIndex(excelFile))
-	// l.debug(fmt.Sprint(getWeekdaysAndDisciplines(excelFile)))
-
 }
