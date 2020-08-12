@@ -272,12 +272,12 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 			for col := firstCol; col <= lastColIndex; col++ {
 				if cols[col][weekdaysStart[weekday] + discipline*3] != "" {
 					currentClass := Class{
-						Discipline: cols[1][weekdaysStart[weekday] + discipline*3],
-						Time: cols[0][weekdaysStart[weekday] + discipline*3],
-						ClassType: strings.Replace(cols[col][weekdaysStart[weekday] + discipline*3], "\n", " ", -1),
-						Comment: cols[col][weekdaysStart[weekday] + discipline*3 + 1],
-						Location: cols[1][weekdaysStart[weekday] + discipline*3 + 2],
-						Professor: cols[1][weekdaysStart[weekday] + discipline*3 + 1],
+						Discipline: strings.TrimSpace(cols[1][weekdaysStart[weekday] + discipline*3]),
+						Time: strings.TrimSpace(cols[0][weekdaysStart[weekday] + discipline*3]),
+						ClassType: strings.TrimSpace(cols[col][weekdaysStart[weekday] + discipline*3]),
+						Comment: strings.TrimSpace(cols[col][weekdaysStart[weekday] + discipline*3 + 1]),
+						Location: strings.TrimSpace(cols[1][weekdaysStart[weekday] + discipline*3 + 2]),
+						Professor: strings.TrimSpace(cols[1][weekdaysStart[weekday] + discipline*3 + 1]),
 						Date: firstDate.AddDate(0, 0, ((col-firstCol)*7)+weekday),
 					}
 					for strings.Contains(currentClass.ClassType, "  ") {
@@ -316,6 +316,9 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 						currentClass.ClassType = "ЭКЗАМЕН"
 					default:
 						l.warn("[%s] Неизвестный тип занятия: %s [%d:%d]", fileName, currentClass.ClassType, col, weekdaysStart[weekday] + discipline*3)
+					}
+					if cols[col][weekdaysStart[weekday] + discipline*3 + 2] != "" {
+						currentClass.Comment = strings.TrimSpace(currentClass.Comment + " " +  cols[col][weekdaysStart[weekday] + discipline*3 + 2])
 					}
 					classes = append(classes, currentClass)
 				}
