@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"strconv"
+	"encoding/json"
 
 	"github.com/360EntSecGroup-Skylar/excelize"
 )
@@ -41,25 +43,25 @@ func (logger *logger) fatal(s string, v ...interface{}) {
 
 // Class - Занятие
 type Class struct {
-	discipline string
-	classType  string
-	date       time.Time
-	time       string
-	professor  string
-	subgroup   int
-	location   string
-	comment    string
+	Discipline string
+	ClassType  string
+	Date       time.Time
+	Time       string
+	Professor  string
+	Subgroup   int
+	Location   string
+	Comment    string
 }
 
 // Group - Группа
 type Group struct {
-	groupName         string
-	numberOfSubgroups int
-	lastUpdate        time.Time
-	institute         string
-	studyLevel        string
-	studyForm         string
-	classes           []Class
+	GroupName         string
+	NumberOfSubgroups int
+	LastUpdate        time.Time
+	Institute         string
+	StudyLevel        string
+	StudyForm         string
+	Classes           []Class
 }
 
 func (group *Group) appendClass(class *Class) {
@@ -112,6 +114,53 @@ func getLastColIndex(f *excelize.File) int {
 		}
 	}
 	return colIndex - emptyColCounter
+}
+
+// получить дату первой ячейки в расписании
+func getFirstDateAndCol(f *excelize.File) (firstDate time.Time, firstCol int, err error) {
+	cols, _ := f.GetCols(f.GetSheetList()[0])
+	firstRowIndex := getFirstRowIndex(f)
+	var colIndex, day int
+	var month time.Month
+	switch cols[2][firstRowIndex-3] {
+	case "ЯНВАРЬ":
+		month = time.January
+	case "ФЕВРАЛЬ":
+		month = time.February
+	case "МАРТ":
+		month = time.March
+	case "АПРЕЛЬ":
+		month = time.April
+	case "МАЙ":
+		month = time.May
+	case "ИЮНЬ":
+		month = time.June
+	case "ИЮЛЬ":
+		month = time.July
+	case "АВГУСТ":
+		month = time.August
+	case "СЕНТЯБРЬ":
+		month = time.September
+	case "ОКТЯБРЬ":
+		month = time.October
+	case "НОЯБРЬ":
+		month = time.November
+	case "ДЕКАБРЬ":
+		month = time.December
+	default:
+		err = errors.New("неизвестный первый месяц")
+		return
+	}
+	for colIndex = 2; colIndex < 5; colIndex++ {
+		if cols[colIndex][firstRowIndex] != "" {
+			day, err = strconv.Atoi(cols[colIndex][firstRowIndex])
+			firstDate = time.Date(time.Now().Year(), month, day, 0, 0, 0, 0, time.UTC)
+			firstCol = colIndex
+			return
+		}
+	}
+	err = errors.New("нет числа первого месяца")
+	return
 }
 
 // получить 3 массива: с индексами строк начала / окончания для каждого дня недели и с количеством возможных предметов для каждого дня недели
@@ -199,6 +248,7 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 	}
 	firstRowIndex := getFirstRowIndex(excelFile)
 	lastRowIndex, err := getLastRowIndex(excelFile)
+	firstDate, firstCol, err := getFirstDateAndCol(excelFile)
 	if err != nil {
 		l.warn("[%s] Ошибка при расчете разметки файла: %s\n", fileName, err)
 		return
@@ -210,11 +260,39 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 		l.warn("[%s] Ошибка при расчете разметки файла: %s\n", fileName, err)
 		return
 	}
+	
+	// парсинг занятий
+	cols, _ := excelFile.GetCols(excelFile.GetSheetList()[0])
+	for weekday, disciplines := range weekdaysDisciplines {
+		if disciplines == 0 {
+			// постоянный выходной
+			continue
+		}
+		for discipline := 0; discipline < disciplines; discipline++ {
+			for col := firstCol; col <= lastColIndex; col++ {
+				if cols[col][weekdaysStart[weekday] + discipline*3] != "" {
+					currentClass := Class{
+						Discipline: cols[1][weekdaysStart[weekday] + discipline*3],
+						Time: cols[0][weekdaysStart[weekday] + discipline*3],
+						ClassType: cols[col][weekdaysStart[weekday] + discipline*3],
+						Comment: cols[col][weekdaysStart[weekday] + discipline*3 + 1],
+						Location: cols[1][weekdaysStart[weekday] + discipline*3 + 2],
+						Professor: cols[1][weekdaysStart[weekday] + discipline*3 + 1],
+						Date: firstDate.AddDate(0, 0, ((col-firstCol)*7)+weekday),
+					}
+					classes = append(classes, currentClass)
+				}
+			}
+		}
+	}
+	// for _, class := range classes {
+	// 	l.debugLogger.Println(class.Date.Year(), "-", class.Date.Month(), "-", class.Date.Day(), class.Discipline, " ", class.ClassType, " ")
+	// }
 	return
 }
 
 // парсинг всех файлов в директории ./cache/downloads
-func parseDownloads(groups *[]Group) (err error) {
+func parseDownloads() (groups []Group, err error) {
 	l.info("Парсинг загруженных файлов...\n")
 	timestamp := time.Now().Format("2006-01-02-15-04-05")
 	filePath := "./cache/downloads"
@@ -235,7 +313,7 @@ func parseDownloads(groups *[]Group) (err error) {
 	}
 	for _, file := range files {
 		if !file.IsDir() && strings.Contains(file.Name(), ".xlsx") {
-			_, _, errSkip := parseFile(file, filePath)
+			classes, groupsInFile, errSkip := parseFile(file, filePath)
 			if errSkip != nil {
 				l.warn("Пропуск таблицы \"%s\": %s.\n", file.Name(), errSkip)
 				err = os.Rename(filePath+"/"+file.Name(), filePath+"/../defective/"+timestamp+"/"+file.Name())
@@ -245,6 +323,41 @@ func parseDownloads(groups *[]Group) (err error) {
 					return
 				}
 				continue
+			}
+			for _, group := range groupsInFile {
+				var institute, studyLevel string
+				switch string(group[0]) {
+				case "1":
+					institute = "Институт экономики, управления и финансов"
+				case "2":
+					institute = "Юридический институт"
+				case "3":
+					institute = "Институт бизнес-технологий"
+				case "4":
+					institute = "Институт информационных систем и инженерно-компьютерных технологий"
+				case "5":
+					institute = "Институт психологии и педагогики"
+				case "6":
+					institute = "Институт гуманитарных технологий"
+				default:
+					l.error("Неизвесный номер института: %s", file.Name())
+					return
+				}
+				if strings.Contains(group, "м") {
+					studyLevel = "Магистратура"
+				} else {
+					studyLevel = "Бакалавриат"
+				}
+				currentGroup := Group{
+					GroupName: group,
+					LastUpdate: time.Now(),
+					Classes: classes,
+					Institute: institute,
+					NumberOfSubgroups: 0,
+					StudyForm: "Очная",
+					StudyLevel: studyLevel,
+				}
+				groups = append(groups, currentGroup)
 			}
 			err = os.Rename(filePath+"/"+file.Name(), filePath+"/../parsed/"+timestamp+"/"+file.Name())
 			if err != nil {
@@ -279,15 +392,21 @@ func main() {
 	// создание директорий
 	err = os.MkdirAll("./cache/downloads", 0755)
 	if err != nil {
-		l.fatal("Ошибка при создании директории: %s\n", err)
+		l.fatal("Ошибка при создании директории: %s", err)
 	}
 
-	var groups []Group
+	groups, err := parseDownloads()
+	if err != nil {
+		l.fatal("Ошибка при парсинге загрузок: %s", err)
+	}
 
-	parseDownloads(&groups)
+	// тут будет отправка данных в БД
+	tmp, _ := json.Marshal(groups)
+	l.debug("%s", tmp)
+
 
 	// filePath := "./cache/downloads"
-	// fileName := "315б,п-1.xlsx"
+	// fileName := "test.xlsx"
 	// excelFile, err := excelize.OpenFile(filePath + "/" + fileName)
 	// if err != nil {
 	// 	l.warn("[%s] Не удалось открыть Excel файл: %s\n", fileName, err)
