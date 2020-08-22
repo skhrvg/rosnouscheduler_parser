@@ -4,3 +4,4 @@
 __debug_bin
 log*.txt
 .vscode
+config.json

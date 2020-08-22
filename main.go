@@ -12,8 +12,11 @@ import (
 	"time"
 	"strconv"
 	"encoding/json"
+	"bytes"
+	"net/http"
 
 	"github.com/360EntSecGroup-Skylar/excelize"
+	"github.com/tkanos/gonfig"
 )
 
 type logger struct {
@@ -39,6 +42,18 @@ func (logger *logger) error(s string, v ...interface{}) {
 func (logger *logger) fatal(s string, v ...interface{}) {
 	logger.fatalLogger.Printf(s, v...)
 	os.Exit(1)
+}
+
+// SimpleResponse - возвращаемая ошибка
+type SimpleResponse struct {
+	Successful bool   `json:"successful"`
+	Err        string `json:"error"`
+	Message    string `json:"message"`
+}
+
+// Config - конфиг парсера (config.json)
+type Config struct {
+	APIURL string
 }
 
 // Class - Занятие
@@ -426,6 +441,16 @@ func main() {
 		errorLogger: log.New(logMultiwriter, "[ERROR] ", log.Ldate|log.Ltime),
 		fatalLogger: log.New(logMultiwriter, "[FATAL] ", log.Ldate|log.Ltime),
 	}
+
+	// чтение конфига
+	cfg := Config{}
+	err = gonfig.GetConf("config.json", &cfg)
+	if err != nil {
+		l.fatal("Ошибка при чтении конфига: %s", err)
+	}
+	l.info("Конфиг загружен.")
+
+
 	// создание директорий
 	err = os.MkdirAll("./cache/downloads", 0755)
 	if err != nil {
@@ -437,7 +462,25 @@ func main() {
 		l.fatal("Ошибка при парсинге загрузок: %s", err)
 	}
 
-	// тут будет отправка данных в БД
-	tmp, _ := json.Marshal(groups)
-	l.debug("%s", tmp)
+	l.info("Отправка расписания в БД...")
+	for _, group := range groups {
+		groupJSON, err := json.Marshal(group)
+		if err != nil {
+			l.error("%s: Ошибка при кодировании группы в JSON: %s", group.GroupName, err)
+		}
+		data := []byte(groupJSON)
+		resp, err := http.Post("http://" + cfg.APIURL + "/groups/" + group.GroupName, "application/json", bytes.NewReader(data))
+		if err != nil {
+			l.error("%s: Ошибка при отправке запроса: %s", group.GroupName, err)
+		}
+		var response SimpleResponse
+		body, _ := ioutil.ReadAll(resp.Body)
+		json.Unmarshal(body, &response)
+		if !response.Successful {
+			l.error("%s: API возвращает ошибку %s - %s", group.GroupName, response.Err, response.Message)
+		} else {
+			l.info("%s: %s", group.GroupName, response.Message)
+		}
+	}
+	l.info("Отправка завершена.")
 }
