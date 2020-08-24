@@ -85,9 +85,12 @@ func (group *Group) appendClass(class *Class) {
 
 // получить индекс первой строки расписания в таблице
 func getFirstRowIndex(f *excelize.File) int {
-	rows, _ := f.GetRows(f.GetSheetList()[0])
+	rows, _ := f.GetRows(f.GetSheetList()[f.GetActiveSheetIndex()])
 	var rowIndex int
 	for rowIndex = 0; rowIndex < len(rows); rowIndex++ {
+		if len(rows[rowIndex]) <= 2 {
+			continue
+		}
 		if rows[rowIndex][1] == "ПОНЕДЕЛЬНИК" {
 			break
 		}
@@ -97,7 +100,7 @@ func getFirstRowIndex(f *excelize.File) int {
 
 // получить индекс последней строки расписания в таблице
 func getLastRowIndex(f *excelize.File) (lastRowIndex int, err error) {
-	rows, _ := f.GetRows(f.GetSheetList()[0])
+	rows, _ := f.GetRows(f.GetSheetList()[f.GetActiveSheetIndex()])
 	var emptyRowCounter, rowIndex int
 	for rowIndex = getFirstRowIndex(f); rowIndex < len(rows) && emptyRowCounter < 6; rowIndex++ {
 		if rows[rowIndex][0] == "" {
@@ -118,7 +121,7 @@ func getLastRowIndex(f *excelize.File) (lastRowIndex int, err error) {
 
 // получить индекс последней колонки расписания в таблице
 func getLastColIndex(f *excelize.File) int {
-	cols, _ := f.GetCols(f.GetSheetList()[0])
+	cols, _ := f.GetCols(f.GetSheetList()[f.GetActiveSheetIndex()])
 	firstRowIndex := getFirstRowIndex(f)
 	var emptyColCounter, colIndex int
 	for colIndex = 2; colIndex < len(cols)-1 && emptyColCounter < 3; colIndex++ {
@@ -133,7 +136,7 @@ func getLastColIndex(f *excelize.File) int {
 
 // получить дату первой ячейки в расписании
 func getFirstDateAndCol(f *excelize.File) (firstDate time.Time, firstCol int, err error) {
-	cols, _ := f.GetCols(f.GetSheetList()[0])
+	cols, _ := f.GetCols(f.GetSheetList()[f.GetActiveSheetIndex()])
 	firstRowIndex := getFirstRowIndex(f)
 	var colIndex, day int
 	var month time.Month
@@ -170,6 +173,9 @@ func getFirstDateAndCol(f *excelize.File) (firstDate time.Time, firstCol int, er
 		if cols[colIndex][firstRowIndex] != "" {
 			day, err = strconv.Atoi(cols[colIndex][firstRowIndex])
 			firstDate = time.Date(time.Now().Year(), month, day, 0, 0, 0, 0, time.UTC)
+			if day >= 27 {
+				firstDate = time.Date(time.Now().Year(), firstDate.AddDate(0, -2, 0).Month(), day, 0, 0, 0, 0, time.UTC)
+			}
 			firstCol = colIndex
 			return
 		}
@@ -180,7 +186,7 @@ func getFirstDateAndCol(f *excelize.File) (firstDate time.Time, firstCol int, er
 
 // получить 3 массива: с индексами строк начала / окончания для каждого дня недели и с количеством возможных предметов для каждого дня недели
 func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdaysEnd [6]int, weekdaysDisciplines [6]int, err error) {
-	cols, _ := f.GetCols(f.GetSheetList()[0])
+	cols, _ := f.GetCols(f.GetSheetList()[f.GetActiveSheetIndex()])
 	lastRowIndex, err := getLastRowIndex(f)
 	if err != nil {
 		return
@@ -232,6 +238,7 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 	}
 	for i := 0; i <= 5; i++ {
 		if (weekdaysEnd[i]-weekdaysStart[i]+1)%3 != 0 && weekdaysEnd[i] != weekdaysStart[i] {
+			l.debug("%d", i)
 			err = errors.New("ошибка при подсчете количества предметов - возможно, в таблице некорректное количество строк")
 			return
 		}
@@ -256,6 +263,8 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 
 	// получение разметки файла
 	excelFile, err := excelize.OpenFile(filePath + "/" + fileName)
+	// l.debug("%d", excelFile.GetActiveSheetIndex())
+	// l.debug("%s", excelFile.GetSheetList())
 	if err != nil {
 		l.warn("[%s] Не удалось открыть Excel файл: %s\n", fileName, err)
 		err = errors.New("excelize не смог открыть файл")
@@ -270,14 +279,14 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 	}
 	lastColIndex := getLastColIndex(excelFile)
 	weekdaysStart, weekdaysEnd, weekdaysDisciplines, err := getWeekdaysAndDisciplines(excelFile)
-	l.debug("FRI:%d LRI:%d LCI:%d WS:%d WE:%d WD:%d", firstRowIndex, lastRowIndex, lastColIndex, weekdaysStart, weekdaysEnd, weekdaysDisciplines)
+	l.debug("FRI:%d LRI:%d LCI:%d FD:%s FCI:%d WS:%d WE:%d WD:%d", firstRowIndex, lastRowIndex, lastColIndex, firstDate, firstCol, weekdaysStart, weekdaysEnd, weekdaysDisciplines)
 	if err != nil {
 		l.warn("[%s] Ошибка при расчете разметки файла: %s\n", fileName, err)
 		return
 	}
 	
 	// парсинг занятий
-	cols, _ := excelFile.GetCols(excelFile.GetSheetList()[0])
+	cols, _ := excelFile.GetCols(excelFile.GetSheetList()[excelFile.GetActiveSheetIndex()])
 	for weekday, disciplines := range weekdaysDisciplines {
 		if disciplines == 0 {
 			// постоянный выходной
@@ -469,7 +478,7 @@ func main() {
 			l.error("%s: Ошибка при кодировании группы в JSON: %s", group.GroupName, err)
 		}
 		data := []byte(groupJSON)
-		resp, err := http.Post("http://" + cfg.APIURL + "/groups/" + group.GroupName, "application/json", bytes.NewReader(data))
+		resp, err := http.Post(cfg.APIURL + "/groups/" + group.GroupName, "application/json", bytes.NewReader(data))
 		if err != nil {
 			l.error("%s: Ошибка при отправке запроса: %s", group.GroupName, err)
 		}
