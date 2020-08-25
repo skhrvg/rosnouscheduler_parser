@@ -223,6 +223,13 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 			continue
 		}
 	}
+	if weekdaysStart[4] > 0 && weekdaysEnd[4] == 0 && weekdaysStart[5] == 0 && weekdaysEnd[5] == 0 {
+		weekdaysEnd[4], _ = getLastRowIndex(f)
+		weekdaysDisciplines[4] = (weekdaysEnd[4] - weekdaysStart[4] + 1) / 3
+		weekdaysStart[5], _ = getLastRowIndex(f)
+		weekdaysEnd[5], _ = getLastRowIndex(f)
+		weekdaysDisciplines[5] = 0
+	}
 	// проверка на ошибки
 	for _, n := range weekdaysStart {
 		if n == 0 {
