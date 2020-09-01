@@ -1,19 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
-	"strconv"
-	"encoding/json"
-	"bytes"
-	"net/http"
 
 	"github.com/360EntSecGroup-Skylar/excelize"
 	"github.com/tkanos/gonfig"
@@ -77,10 +77,6 @@ type Group struct {
 	StudyLevel        string
 	StudyForm         string
 	Classes           []Class
-}
-
-func (group *Group) appendClass(class *Class) {
-	//todo
 }
 
 // получить индекс первой строки расписания в таблице
@@ -208,6 +204,10 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 			weekdaysEnd[2] = rowIndex - 1
 			weekdaysDisciplines[2] = (weekdaysEnd[2] - weekdaysStart[2] + 1) / 3
 			weekdaysStart[3] = rowIndex + 1
+			// 2020-2 fix - пустая строка в четверг
+			if cols[1][weekdaysStart[3]] == "" && cols[1][weekdaysStart[3]+1] != "" {
+				weekdaysStart[3] = weekdaysStart[3] + 1
+			}
 		case "ПЯТНИЦА":
 			weekdaysEnd[3] = rowIndex - 1
 			weekdaysDisciplines[3] = (weekdaysEnd[3] - weekdaysStart[3] + 1) / 3
@@ -216,7 +216,7 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 			weekdaysEnd[4] = rowIndex - 1
 			weekdaysDisciplines[4] = (weekdaysEnd[4] - weekdaysStart[4] + 1) / 3
 			weekdaysStart[5] = rowIndex + 1
-			weekdaysEnd[5], _ = getLastRowIndex(f)
+			weekdaysEnd[5] = lastRowIndex
 			weekdaysDisciplines[5] = (weekdaysEnd[5] - weekdaysStart[5] + 1) / 3
 			break
 		default:
@@ -224,10 +224,10 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 		}
 	}
 	if weekdaysStart[4] > 0 && weekdaysEnd[4] == 0 && weekdaysStart[5] == 0 && weekdaysEnd[5] == 0 {
-		weekdaysEnd[4], _ = getLastRowIndex(f)
+		weekdaysEnd[4] = lastRowIndex
 		weekdaysDisciplines[4] = (weekdaysEnd[4] - weekdaysStart[4] + 1) / 3
-		weekdaysStart[5], _ = getLastRowIndex(f)
-		weekdaysEnd[5], _ = getLastRowIndex(f)
+		weekdaysStart[5] = lastRowIndex
+		weekdaysEnd[5] = lastRowIndex
 		weekdaysDisciplines[5] = 0
 	}
 	// проверка на ошибки
@@ -245,8 +245,7 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 	}
 	for i := 0; i <= 5; i++ {
 		if (weekdaysEnd[i]-weekdaysStart[i]+1)%3 != 0 && weekdaysEnd[i] != weekdaysStart[i] {
-			l.debug("%d", i)
-			err = errors.New("ошибка при подсчете количества предметов - возможно, в таблице некорректное количество строк")
+			err = fmt.Errorf("ошибка при подсчете количества предметов - возможно, в таблице некорректное количество строк (%d)", i+1)
 			return
 		}
 	}
@@ -256,13 +255,14 @@ func getWeekdaysAndDisciplines(f *excelize.File) (weekdaysStart [6]int, weekdays
 // парсинг одного файла
 func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile []string, err error) {
 	fileName := file.Name()
-	l.info("[%s] Начало парсинга таблицы...\n", fileName)
+	l.info("[%s] Начало парсинга таблицы...", fileName)
 	// названия групп по названию файла
 	groupsInFile = strings.Split(strings.Replace(strings.Replace(strings.Replace(strings.Replace(fileName, ".xlsx", "", -1), ", ", ",", -1), "б,п", "бп", -1), "п,б", "пб", -1), ",")
-	l.info("[%s] Найдены группы: %s\n", fileName, groupsInFile)
+	l.info("[%s] Найдены группы: %s", fileName, groupsInFile)
+	report(fileName, "Найдены группы: %s", groupsInFile)
 	for _, group := range groupsInFile {
 		if isMatchRegexp, _ := regexp.MatchString(`^(\d{3})([а-яА-Я]{0,3})(-\d|\d)?$`, group); !isMatchRegexp {
-			l.warn("[%s] Некорректное название группы: \"%s\"!\n", fileName, group)
+			l.warn("[%s] Некорректное название группы: \"%s\"!", fileName, group)
 			err = errors.New("некорректное название группы в имени файла")
 			return
 		}
@@ -270,10 +270,8 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 
 	// получение разметки файла
 	excelFile, err := excelize.OpenFile(filePath + "/" + fileName)
-	// l.debug("%d", excelFile.GetActiveSheetIndex())
-	// l.debug("%s", excelFile.GetSheetList())
 	if err != nil {
-		l.warn("[%s] Не удалось открыть Excel файл: %s\n", fileName, err)
+		l.warn("[%s] Не удалось открыть Excel файл: %s", fileName, err)
 		err = errors.New("excelize не смог открыть файл")
 		return
 	}
@@ -281,17 +279,18 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 	lastRowIndex, err := getLastRowIndex(excelFile)
 	firstDate, firstCol, err := getFirstDateAndCol(excelFile)
 	if err != nil {
-		l.warn("[%s] Ошибка при расчете разметки файла: %s\n", fileName, err)
+		l.warn("[%s] Ошибка при расчете разметки файла: %s", fileName, err)
 		return
 	}
 	lastColIndex := getLastColIndex(excelFile)
 	weekdaysStart, weekdaysEnd, weekdaysDisciplines, err := getWeekdaysAndDisciplines(excelFile)
 	l.debug("FRI:%d LRI:%d LCI:%d FD:%s FCI:%d WS:%d WE:%d WD:%d", firstRowIndex, lastRowIndex, lastColIndex, firstDate, firstCol, weekdaysStart, weekdaysEnd, weekdaysDisciplines)
+	report(fileName, "FRI:%d LRI:%d LCI:%d FD:%s FCI:%d WS:%d WE:%d WD:%d", firstRowIndex, lastRowIndex, lastColIndex, firstDate, firstCol, weekdaysStart, weekdaysEnd, weekdaysDisciplines)
 	if err != nil {
-		l.warn("[%s] Ошибка при расчете разметки файла: %s\n", fileName, err)
+		l.warn("[%s] Ошибка при расчете разметки файла: %s", fileName, err)
 		return
 	}
-	
+
 	// парсинг занятий
 	cols, _ := excelFile.GetCols(excelFile.GetSheetList()[excelFile.GetActiveSheetIndex()])
 	for weekday, disciplines := range weekdaysDisciplines {
@@ -301,16 +300,17 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 		}
 		for discipline := 0; discipline < disciplines; discipline++ {
 			for col := firstCol; col <= lastColIndex; col++ {
-				if cols[col][weekdaysStart[weekday] + discipline*3] != "" {
+				if cols[col][weekdaysStart[weekday]+discipline*3] != "" {
 					currentClass := Class{
-						Discipline: strings.TrimSpace(cols[1][weekdaysStart[weekday] + discipline*3]),
-						Time: strings.TrimSpace(cols[0][weekdaysStart[weekday] + discipline*3]),
-						ClassType: strings.TrimSpace(cols[col][weekdaysStart[weekday] + discipline*3]),
-						Comment: strings.TrimSpace(cols[col][weekdaysStart[weekday] + discipline*3 + 1]),
-						Location: strings.TrimSpace(cols[1][weekdaysStart[weekday] + discipline*3 + 2]),
-						Professor: strings.TrimSpace(cols[1][weekdaysStart[weekday] + discipline*3 + 1]),
-						Date: firstDate.AddDate(0, 0, ((col-firstCol)*7)+weekday),
+						Discipline: strings.TrimSpace(cols[1][weekdaysStart[weekday]+discipline*3]),
+						Time:       strings.TrimSpace(cols[0][weekdaysStart[weekday]+discipline*3]),
+						ClassType:  strings.TrimSpace(cols[col][weekdaysStart[weekday]+discipline*3]),
+						Comment:    strings.TrimSpace(cols[col][weekdaysStart[weekday]+discipline*3+1]),
+						Location:   strings.TrimSpace(cols[1][weekdaysStart[weekday]+discipline*3+2]),
+						Professor:  strings.TrimSpace(cols[1][weekdaysStart[weekday]+discipline*3+1]),
+						Date:       firstDate.AddDate(0, 0, ((col-firstCol)*7)+weekday),
 					}
+					currentClass.ClassType = strings.Replace(currentClass.ClassType, "\n", " ", -1)
 					for strings.Contains(currentClass.ClassType, "  ") {
 						currentClass.ClassType = strings.Replace(currentClass.ClassType, "  ", " ", -1)
 					}
@@ -345,11 +345,14 @@ func parseFile(file os.FileInfo, filePath string) (classes []Class, groupsInFile
 						currentClass.ClassType = "КОНСУЛЬТАЦИЯ"
 					case "ЭКЗ":
 						currentClass.ClassType = "ЭКЗАМЕН"
+					case "ВЛ":
+						currentClass.ClassType = "Видеолекция"
 					default:
-						l.warn("[%s] Неизвестный тип занятия: %s [%d:%d]", fileName, currentClass.ClassType, col, weekdaysStart[weekday] + discipline*3)
+						report(fileName, "Неизвестный тип занятия: %s [%d:%d]", currentClass.ClassType, col, weekdaysStart[weekday]+discipline*3)
+						l.warn("[%s] Неизвестный тип занятия: %s [%d:%d]", fileName, currentClass.ClassType, col, weekdaysStart[weekday]+discipline*3)
 					}
-					if cols[col][weekdaysStart[weekday] + discipline*3 + 2] != "" {
-						currentClass.Comment = strings.TrimSpace(currentClass.Comment + " " +  cols[col][weekdaysStart[weekday] + discipline*3 + 2])
+					if cols[col][weekdaysStart[weekday]+discipline*3+2] != "" {
+						currentClass.Comment = strings.TrimSpace(currentClass.Comment + " " + cols[col][weekdaysStart[weekday]+discipline*3+2])
 					}
 					classes = append(classes, currentClass)
 				}
@@ -366,24 +369,25 @@ func parseDownloads() (groups []Group, err error) {
 	filePath := "./cache/downloads"
 	err = os.MkdirAll(filePath+"/../defective/"+timestamp+"/", 0755)
 	if err != nil {
-		l.error("Ошибка при создании директории: %s\n", err)
+		l.error("Ошибка при создании директории: %s", err)
 		return
 	}
 	err = os.MkdirAll(filePath+"/../parsed/"+timestamp+"/", 0755)
 	if err != nil {
-		l.error("Ошибка при создании директории: %s\n", err)
+		l.error("Ошибка при создании директории: %s", err)
 		return
 	}
 	files, err := ioutil.ReadDir(filePath)
 	if err != nil {
-		l.error("Ошибка при получении списка файлов: %s\n", err)
+		l.error("Ошибка при получении списка файлов: %s", err)
 		return
 	}
 	for _, file := range files {
 		if !file.IsDir() && strings.Contains(file.Name(), ".xlsx") {
 			classes, groupsInFile, errSkip := parseFile(file, filePath)
 			if errSkip != nil {
-				l.warn("Пропуск таблицы \"%s\": %s.\n", file.Name(), errSkip)
+				l.warn("Пропуск таблицы \"%s\": %s.", file.Name(), errSkip)
+				report(file.Name(), "Пропуск таблицы: %s\n", errSkip)
 				err = os.Rename(filePath+"/"+file.Name(), filePath+"/../defective/"+timestamp+"/"+file.Name())
 				if err != nil {
 					l.error("Ошибка при перемещении таблицы \"%s\". Парсинг остановлен.", file.Name())
@@ -417,13 +421,13 @@ func parseDownloads() (groups []Group, err error) {
 					studyLevel = "Бакалавриат"
 				}
 				currentGroup := Group{
-					GroupName: group,
-					LastUpdate: time.Now(),
-					Classes: classes,
-					Institute: institute,
+					GroupName:         group,
+					LastUpdate:        time.Now(),
+					Classes:           classes,
+					Institute:         institute,
 					NumberOfSubgroups: 0,
-					StudyForm: "Очная",
-					StudyLevel: studyLevel,
+					StudyForm:         "Очная",
+					StudyLevel:        studyLevel,
 				}
 				groups = append(groups, currentGroup)
 			}
@@ -433,14 +437,20 @@ func parseDownloads() (groups []Group, err error) {
 				l.error(fmt.Sprint(err))
 				return
 			}
-			l.info("Успешный парсинг таблицы \"%s\".\n", file.Name())
+			l.info("Успешный парсинг таблицы \"%s\".", file.Name())
+			report(file.Name(), "Успешный парсинг таблицы\n")
 		}
 	}
-	l.info("Парсинг загруженных файлов окончен.\n")
+	l.info("Парсинг загруженных файлов окончен.")
 	return
 }
 
 var l logger
+var reportFile *os.File
+
+func report(fileName string, s string, v ...interface{}) {
+	reportFile.WriteString("[" + fileName + "]  " + fmt.Sprintf(s, v...) + "\n")
+}
 
 func main() {
 	// создание логгера
@@ -466,11 +476,17 @@ func main() {
 	}
 	l.info("Конфиг загружен.")
 
-
 	// создание директорий
 	err = os.MkdirAll("./cache/downloads", 0755)
+	err = os.MkdirAll("./reports", 0755)
 	if err != nil {
 		l.fatal("Ошибка при создании директории: %s", err)
+	}
+
+	// создание файла отчета
+	reportFile, err = os.OpenFile("reports/report-" + time.Now().Format("2006-01-02-15-04-05") + ".txt", os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	if err != nil {
+		l.fatal("Ошибка при создании файла отчета: %s", err)
 	}
 
 	groups, err := parseDownloads()
@@ -485,7 +501,7 @@ func main() {
 			l.error("%s: Ошибка при кодировании группы в JSON: %s", group.GroupName, err)
 		}
 		data := []byte(groupJSON)
-		resp, err := http.Post(cfg.APIURL + "/groups/" + group.GroupName, "application/json", bytes.NewReader(data))
+		resp, err := http.Post(cfg.APIURL+"/groups/"+group.GroupName, "application/json", bytes.NewReader(data))
 		if err != nil {
 			l.error("%s: Ошибка при отправке запроса: %s", group.GroupName, err)
 		}
